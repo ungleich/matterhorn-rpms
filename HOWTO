@@ -8,6 +8,9 @@ HOWTO make rpms via spec files
 
   echo "makerpm ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/makerpm
 
+* add to mock group
+  usermod -aG mock makerpm
+
 * install git and clone git repo
 
   yum install git

@@ -1,0 +1,21 @@
+# For initialize your system (install dependencies for buildung source code):
+~/matterhorn-rpms/bin/build.sh -i
+
+# Initialize mock chroot for target system. For example epel-6-x86_64
+mock -r epel-6-x86_64 --init
+
+# Create the different srpms out of the spec files
+rpbmbuild -bs ./*.spec
+
+# If you want to create centos6 rpms for for example ffmpeg run
+cp  ~/matterhorn-rpms/bin/build_rpm.sh /var/lib/mock/epel-6-x86_64/root/root/build_rpm.sh
+# Remove all sudo commands in /var/lib/mock/../build_rpm.sh. Since mock run commands as root in chroot
+# Install git and yum
+mock -r epel-6-x86_64 --no-clean --no-cleanup-after -i yum -i git
+mock -r epel-6-x86_64 --no-clean --no-cleanup-after --chroot "export PATH=$PATH:/bin && /root/build_rpm.sh"
+
+# Now you have to build the different rpms in the mock chroot
+# Probably you have to install dependencies packages in the chroot
+mock -r epel-6-x86_64 --no-clean --no-cleanup-after --resultdir=~/mock_rpms/ --rebuild ./*src.rpm
+
+# If everything works fine, the rpms for epel6-x86_64 are now stored in ~/mock_rpms/

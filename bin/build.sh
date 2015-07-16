@@ -15,6 +15,9 @@
 #       }
 # }
 
+# base switches
+OS_BOTH=0
+
 # base paths
 specdir=$HOME/matterhorn-rpms/specs
 rpmdir=$HOME/matterhorn-rpms/rpms
@@ -68,14 +71,15 @@ function xeval()
 function help()
 {
 cat <<EOF
-$0 -h | -i | -p <PACKAGE>
+$0 -h | -i | -t <TARGET_OS> | -p <PACKAGE>
     
     -h ... help
     -i ... init system for rpm building
+    -t <TARGET_OS> define target os [rhel6, rhel7, both]
     -p <PACKAGE> ... make rpms for <PACKAGE> package
 
-    $0 -i
-    $0 -p ffmpeg
+    $0 -i -t both
+    $0 -t rhel6 -p ffmpeg
 EOF
     exit 0
 }
@@ -94,13 +98,13 @@ function install_specs()
 
     # application was installed locally? (via rpm from spec file)
     if echo "$line" | egrep "^$rpm.*(@/$rpm|installed)" >& /dev/null; then
-	message "Package $rpm installed from spec, skip package"
-	return 0
+	    message "Package $rpm installed from spec, skip package"
+	    return 0
     elif [ -n "$line" ]; then
-	message "package $prm installed via online repo, remove and install via specs"
-	# remove package without dependencies
-	#sudo yum remove -y $rpm
-	xeval "sudo rpm -e $rpm --nodeps"
+	    message "package $rpm installed via online repo, remove and install via specs"
+	    # remove package without dependencies
+	    #sudo yum remove -y $rpm
+	    xeval "sudo rpm -e $rpm --nodeps"
     fi
 
     # Clear buildir
@@ -115,11 +119,10 @@ function install_specs()
     xeval "sudo yum-builddep -y $specfile"
 
     # Build package
-    xeval "rpmbuild -ba $specfile"
+    xeval "rpmbuild -bs $specfile"
 
     # Install package
-    # basetarget
-    local toinst="~/rpmbuild/RPMS/x86_64/*${basetarget}*"
+
     # based on eqarr
     local tmp="$(echo "$eqarr" | grep " $basetarget" | cut -d' ' -f1)"
     [ -n "$tmp" ] && toinst="$toinst ~/rpmbuild/RPMS/x86_64/*${tmp}*"
@@ -135,6 +138,7 @@ function init()
     # Install basic packages
     xeval "sudo yum install -y rpmdevtools.noarch rpmlint.noarch createrepo.noarch vim wget yum-utils"
     xeval "sudo yum install -y  gcc gcc-c++ make openssl-devel"
+    xeval "sudo yum install -y  mock"
 
     # Setup build dirs
     cd ~
@@ -156,9 +160,27 @@ function init()
 
     # Download rpms
     if [ -f "$rpmdir/url.txt" ]; then
-        cd $rpmdir
-        xeval "wget -i $rpmdir/url.txt"
+            cd $rpmdir
+            xeval "wget -i $rpmdir/url.txt"
     fi
+    # If creating for both os
+    if [ -n ${OS_BOTH} ]; then
+        if [ -f "$rpmdir7/url.txt" ]; then
+                cd $rpmdir7
+                xeval "wget -i $rpmdir7/url.txt"
+        fi
+    fi
+
+    # Initialize mock
+    case "${os}" in
+        rhel6)  mock -r epel-6-x86_64 --init
+                ;;
+        rhel7)  mock -r epel-7-x86_64 --init
+                ;;
+        both)   mock -r epel-6-x86_64 --init
+                mock -r epel-7-x86_64 --init
+                ;;
+    esac
 }
 
 # main function, the base of recursion
@@ -210,6 +232,43 @@ function main()
     else
         message "Target $target is installed, skipped"
     fi
+
+    # If OS_BOTH switch is set
+    if [ ${OS_BOTH} -eq 1 ]; then
+        os="rhel7"
+        # add suffix .spec
+        local specfile7="$specdir7/$basetarget.spec"
+
+        # spec file exists?
+        if [ -f "$specfile7" ]; then
+            message "Specfile $specfile7 exists, following dependencies"
+            # Solve dependencies via rekursion calls
+            breqs="$($rpmspec -q --buildrequires $specfile7)"
+            rc=$?
+            [ "$rc" != "0" ] && error "rpmspec -q --buildrequires returns $rc"
+            for breq in $(echo "$breqs" | cut -d' ' -f1); do
+                message "Run main $breq (dependence of $(basename $specfile7))"
+                main $breq
+            done
+            install_specs $target $basetarget $specfile7 
+        # package is not installed
+        elif ! yum list installed $target >& /dev/null; then
+            # is package in online repo?
+            if yum list $target >& /dev/null; then
+                message "Install target $target from online repo"
+                xeval "sudo yum install -y -q $target"
+            # is package in local directory
+            elif ls $rpmdir/$target* >& /dev/null; then
+                message "Install target $target from local directory"
+                xeval "sudo yum localinstall -y -q $rpmdir/$target*"
+            # no source, can not install
+            else
+                error "There is no source to install $target"
+            fi
+        else
+            message "Target $target is installed, skipped"
+        fi
+    fi
 }
 
 # path to rpmspec tool (package rpm contains rpmspec) 
@@ -221,17 +280,13 @@ else
     error "Can not find tool rpmspec"
 fi
 
-# change directories for centos7
-if egrep 'CentOS Linux release 7\.' /etc/redhat-release >& /dev/null; then
-    specdir="${specdir}-centos7"
-    rpmdir="${rpmdir}-centos7"
-fi
-
 # parse input arguments
 while [ "$#" != "0" ]; do
     case "$1" in
-        -i) init
-            exit 0
+        -t) shift
+            os="$1"
+            ;;
+        -i) init=1
             ;;
         -p) shift
             target="$1"
@@ -242,11 +297,35 @@ while [ "$#" != "0" ]; do
     shift
 done
 
+# change directories for centos7
+#if egrep 'CentOS Linux release 7\.' /etc/redhat-release >& /dev/null; then
+#    specdir="${specdir}-centos7"
+#    rpmdir="${rpmdir}-centos7"
+#fi
+
+# check if os is valide
+case "${os}" in
+    rhel6)  specdir="${specdir}"
+            rpmdir="${rpmdir}"
+            ;;
+    rhel7)  specdir="${specdir}-centos7"
+            rpmdir="${rpmdir}-centos7"
+            ;;
+    both)   OS_BOTH=1
+            specdir7="${specdir}-centos7"
+            rpmdir7="${rpmdir}-centos7"
+            os="rhel6"
+            ;;
+    *)      help
+esac
+
+[ ${init} -eq 1 ] && init && exit
+
 # target is required
 [ -z "$target" ] && help
 
 # print variables
-message "rpmspec=$rpmspec specdir=$specdir rpmdir=$rpmdir"
+message "rpmspec=$rpmspec specdir=$specdir rpmdir=$rpmdir os=${os}"
 
 # start iteration #1
 main $target
